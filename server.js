@@ -657,31 +657,31 @@ wss.on('connection', (ws) => {
                         break;
                     }
                     const { targetUser, amount, action } = data;
+                    const change = parseFloat(amount) || 0;
                     
-                    const target = players[targetUser];
-                    if (target) {
-                        const change = parseFloat(amount) || 0;
-                        if (action === 'credit') {
-                            target.balance += change;
-                        } else if (action === 'debit') {
-                            target.balance = Math.max(0, target.balance - change);
-                        }
-                        
-                        if (target.ws && target.ws.readyState === 1) {
-                            target.ws.send(JSON.stringify({
-                                type: 'balance_update',
-                                balance: target.balance
-                            }));
-                        }
-                        
-                        console.log(`Admin modified ${targetUser} balance. Action: ${action}, Amount: $${change}. New balance: $${target.balance}`);
-                        broadcastLobby();
-                    } else {
+                    if (!usersDb[targetUser]) {
                         ws.send(JSON.stringify({
                             type: 'error',
-                            message: `Player '${targetUser}' is not online right now.`
+                            message: `Player '${targetUser}' does not exist.`
                         }));
+                        break;
                     }
+
+                    if (action === 'credit') {
+                        updatePlayerBalance(targetUser, change);
+                    } else if (action === 'debit') {
+                        updatePlayerBalance(targetUser, -change);
+                    }
+
+                    console.log(`Admin modified ${targetUser} balance. Action: ${action}, Amount: $${change}.`);
+                    
+                    // Reply to admin with success
+                    ws.send(JSON.stringify({
+                        type: 'admin_modify_success',
+                        message: `Successfully ${action === 'credit' ? 'credited' : 'debited'} $${change.toFixed(2)} to @${targetUser}!`
+                    }));
+
+                    broadcastLobby();
                     break;
                 }
 
