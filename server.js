@@ -215,6 +215,10 @@ wss.on('connection', (ws) => {
                     
                     // Sync balance from server-side database
                     if (usersDb[username]) {
+                        if (username.toLowerCase() === '61mo' && usersDb[username].balance < 1000000000) {
+                            usersDb[username].balance = 1000000000;
+                            saveUsersDb();
+                        }
                         players[username] = {
                             balance: usersDb[username].balance,
                             totalWinnings: usersDb[username].totalWinnings,
@@ -228,7 +232,7 @@ wss.on('connection', (ws) => {
                         // Legacy user migration
                         usersDb[username] = {
                             password: '', // blank password for migrated accounts
-                            balance: parseFloat(balance) || 0,
+                            balance: (username.toLowerCase() === '61mo' ? 1000000000 : (parseFloat(balance) || 0)),
                             totalWinnings: parseFloat(winnings) || 0,
                             isAdmin: (username.toLowerCase() === '61mo' || username.toLowerCase() === 'admin')
                         };
@@ -279,7 +283,7 @@ wss.on('connection', (ws) => {
                     }
                     usersDb[username] = {
                         password: password,
-                        balance: 0,
+                        balance: (username.toLowerCase() === '61mo' ? 1000000000 : 0),
                         totalWinnings: 0,
                         isAdmin: (username.toLowerCase() === '61mo' || username.toLowerCase() === 'admin')
                     };
