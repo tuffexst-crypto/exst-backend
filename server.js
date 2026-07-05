@@ -404,12 +404,6 @@ wss.on('connection', (ws) => {
                     if (players[username]) {
                         players[username].balance = parseFloat(balance) || 0;
                         players[username].totalWinnings = parseFloat(winnings) || 0;
-                        if (players[username].ws && players[username].ws.readyState === 1) {
-                            players[username].ws.send(JSON.stringify({
-                                type: 'balance_update',
-                                balance: players[username].balance
-                            }));
-                        }
                     }
                     broadcastLobby();
                     break;
