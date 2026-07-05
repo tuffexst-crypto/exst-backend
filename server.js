@@ -1,5 +1,64 @@
 const { WebSocketServer } = require('ws');
 const http = require('http');
+const fs = require('fs');
+
+// File-based databases
+const USERS_DB_PATH = 'users.json';
+const TOKENS_PATH = 'admin_tokens.json';
+
+let usersDb = {};
+try {
+    if (fs.existsSync(USERS_DB_PATH)) {
+        usersDb = JSON.parse(fs.readFileSync(USERS_DB_PATH, 'utf8'));
+    }
+} catch (e) {
+    console.error('Failed to load users database:', e);
+}
+
+function saveUsersDb() {
+    try {
+        fs.writeFileSync(USERS_DB_PATH, JSON.stringify(usersDb, null, 2));
+    } catch (e) {
+        console.error('Failed to save users database:', e);
+    }
+}
+
+let activeAdminTokens = new Set();
+try {
+    if (fs.existsSync(TOKENS_PATH)) {
+        activeAdminTokens = new Set(JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf8')));
+    }
+} catch (e) {
+    console.error('Failed to load admin tokens:', e);
+}
+
+function saveAdminTokens() {
+    try {
+        fs.writeFileSync(TOKENS_PATH, JSON.stringify(Array.from(activeAdminTokens)));
+    } catch (e) {
+        console.error('Failed to save admin tokens:', e);
+    }
+}
+
+function updatePlayerBalance(username, balanceChange, winningsChange = 0) {
+    if (players[username]) {
+        players[username].balance = Math.max(0, players[username].balance + balanceChange);
+        players[username].totalWinnings = Math.max(0, players[username].totalWinnings + winningsChange);
+        
+        if (players[username].ws && players[username].ws.readyState === 1) {
+            players[username].ws.send(JSON.stringify({
+                type: 'balance_update',
+                balance: players[username].balance
+            }));
+        }
+    }
+    
+    if (usersDb[username]) {
+        usersDb[username].balance = Math.max(0, usersDb[username].balance + balanceChange);
+        usersDb[username].totalWinnings = Math.max(0, usersDb[username].totalWinnings + winningsChange);
+        saveUsersDb();
+    }
+}
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = 'HRKDSKC-ZETMQP9-J1FYZ4W-A3B355B';
@@ -113,7 +172,6 @@ const players = {}; // username -> { balance, totalWinnings, ws }
 let activeDuels = []; // array of { id, creator, wager, creatorMove, status, opponent, opponentMove }
 let activeGiveaway = null;
 const ADMIN_PASSWORD = 'admin123';
-const activeAdminTokens = new Set();
 
 function broadcastLobby() {
     const duelList = activeDuels.map(d => ({
@@ -123,10 +181,10 @@ function broadcastLobby() {
         status: d.status
     }));
 
-    const leaderboard = Object.keys(players).map(name => ({
+    const leaderboard = Object.keys(usersDb).map(name => ({
         name: name,
-        balance: players[name].balance,
-        winnings: players[name].totalWinnings
+        balance: usersDb[name].balance,
+        winnings: usersDb[name].totalWinnings
     })).sort((a, b) => b.balance - a.balance);
 
     const payload = JSON.stringify({
@@ -155,12 +213,35 @@ wss.on('connection', (ws) => {
                     const { username, balance, winnings } = data;
                     clientUsername = username;
                     
-                    // Always register or update player details to sync frontend and backend balances
-                    players[username] = {
-                        balance: parseFloat(balance) || 0,
-                        totalWinnings: parseFloat(winnings) || 0,
-                        ws: ws
-                    };
+                    // Sync balance from server-side database
+                    if (usersDb[username]) {
+                        players[username] = {
+                            balance: usersDb[username].balance,
+                            totalWinnings: usersDb[username].totalWinnings,
+                            ws: ws
+                        };
+                        // Auto-authenticate as admin if marked in DB
+                        if (usersDb[username].isAdmin) {
+                            ws.isAdmin = true;
+                        }
+                    } else {
+                        // Legacy user migration
+                        usersDb[username] = {
+                            password: '', // blank password for migrated accounts
+                            balance: parseFloat(balance) || 0,
+                            totalWinnings: parseFloat(winnings) || 0,
+                            isAdmin: (username.toLowerCase() === '61mo' || username.toLowerCase() === 'admin')
+                        };
+                        saveUsersDb();
+                        players[username] = {
+                            balance: usersDb[username].balance,
+                            totalWinnings: usersDb[username].totalWinnings,
+                            ws: ws
+                        };
+                        if (usersDb[username].isAdmin) {
+                            ws.isAdmin = true;
+                        }
+                    }
                     
                     console.log(`Player connected: ${username} with balance $${players[username].balance}`);
                     
@@ -187,6 +268,95 @@ wss.on('connection', (ws) => {
                     break;
                 }
 
+                case 'register': {
+                    const { username, password } = data;
+                    if (usersDb[username]) {
+                        ws.send(JSON.stringify({
+                            type: 'register_failed',
+                            message: 'Username already exists!'
+                        }));
+                        break;
+                    }
+                    usersDb[username] = {
+                        password: password,
+                        balance: 0,
+                        totalWinnings: 0,
+                        isAdmin: (username.toLowerCase() === '61mo' || username.toLowerCase() === 'admin')
+                    };
+                    saveUsersDb();
+                    
+                    clientUsername = username;
+                    players[username] = {
+                        balance: 0,
+                        totalWinnings: 0,
+                        ws: ws
+                    };
+                    if (usersDb[username].isAdmin) {
+                        ws.isAdmin = true;
+                    }
+                    
+                    ws.send(JSON.stringify({
+                        type: 'register_success',
+                        username: username
+                    }));
+                    
+                    // If admin, send auth token
+                    if (usersDb[username].isAdmin) {
+                        const token = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                        activeAdminTokens.add(token);
+                        saveAdminTokens();
+                        ws.send(JSON.stringify({
+                            type: 'admin_auth_success',
+                            token: token
+                        }));
+                    }
+
+                    broadcastLobby();
+                    break;
+                }
+
+                case 'login': {
+                    const { username, password } = data;
+                    const userRecord = usersDb[username];
+                    if (!userRecord || userRecord.password !== password) {
+                        ws.send(JSON.stringify({
+                            type: 'login_failed',
+                            message: 'Invalid username or password!'
+                        }));
+                        break;
+                    }
+                    
+                    clientUsername = username;
+                    players[username] = {
+                        balance: userRecord.balance,
+                        totalWinnings: userRecord.totalWinnings,
+                        ws: ws
+                    };
+                    if (userRecord.isAdmin) {
+                        ws.isAdmin = true;
+                    }
+
+                    ws.send(JSON.stringify({
+                        type: 'login_success',
+                        username: username,
+                        balance: userRecord.balance,
+                        winnings: userRecord.totalWinnings
+                    }));
+                    
+                    if (userRecord.isAdmin) {
+                        const token = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                        activeAdminTokens.add(token);
+                        saveAdminTokens();
+                        ws.send(JSON.stringify({
+                            type: 'admin_auth_success',
+                            token: token
+                        }));
+                    }
+
+                    broadcastLobby();
+                    break;
+                }
+
                 case 'admin_login': {
                     const { password, token } = data;
                     let success = false;
@@ -206,6 +376,7 @@ wss.on('connection', (ws) => {
                         ws.isAdmin = true;
                         const newToken = useToken || Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
                         activeAdminTokens.add(newToken);
+                        saveAdminTokens();
 
                         ws.send(JSON.stringify({
                             type: 'admin_auth_success',
@@ -225,11 +396,22 @@ wss.on('connection', (ws) => {
 
                 case 'update_balance': {
                     const { username, balance, winnings } = data;
-                    if (players[username]) {
-                        players[username].balance = balance;
-                        players[username].totalWinnings = winnings;
-                        broadcastLobby();
+                    if (usersDb[username]) {
+                        usersDb[username].balance = parseFloat(balance) || 0;
+                        usersDb[username].totalWinnings = parseFloat(winnings) || 0;
+                        saveUsersDb();
                     }
+                    if (players[username]) {
+                        players[username].balance = parseFloat(balance) || 0;
+                        players[username].totalWinnings = parseFloat(winnings) || 0;
+                        if (players[username].ws && players[username].ws.readyState === 1) {
+                            players[username].ws.send(JSON.stringify({
+                                type: 'balance_update',
+                                balance: players[username].balance
+                            }));
+                        }
+                    }
+                    broadcastLobby();
                     break;
                 }
 
@@ -243,11 +425,7 @@ wss.on('connection', (ws) => {
                     }
 
                     // Deduct balance
-                    players[creator].balance -= wager;
-                    ws.send(JSON.stringify({
-                        type: 'balance_update',
-                        balance: players[creator].balance
-                    }));
+                    updatePlayerBalance(creator, -wager);
 
                     const duel = {
                         id: Math.random().toString(36).substring(2, 9),
@@ -285,11 +463,7 @@ wss.on('connection', (ws) => {
                     }
 
                     // Deduct balance
-                    players[opponent].balance -= duel.wager;
-                    ws.send(JSON.stringify({
-                        type: 'balance_update',
-                        balance: players[opponent].balance
-                    }));
+                    updatePlayerBalance(opponent, -duel.wager);
 
                     duel.status = 'Playing';
                     duel.opponent = opponent;
@@ -385,11 +559,7 @@ wss.on('connection', (ws) => {
                     }
 
                     // Deduct balance from host
-                    hostPlayer.balance -= prizeAmt;
-                    ws.send(JSON.stringify({
-                        type: 'balance_update',
-                        balance: hostPlayer.balance
-                    }));
+                    updatePlayerBalance(username, -prizeAmt);
 
                     // Set up giveaway state
                     activeGiveaway = {
@@ -649,14 +819,11 @@ function resolveDuelOutcome(duel) {
     // Delay outcome credits on the server to match the client countdown transition
     setTimeout(() => {
         if (winner === 'tie') {
-            if (players[p1]) players[p1].balance += wager;
-            if (players[p2]) players[p2].balance += wager;
+            updatePlayerBalance(p1, wager);
+            updatePlayerBalance(p2, wager);
         } else {
             const winAmount = wager * 1.95;
-            if (players[winner]) {
-                players[winner].balance += winAmount;
-                players[winner].totalWinnings += winAmount;
-            }
+            updatePlayerBalance(winner, winAmount, winAmount);
         }
 
         // Remove from active list
@@ -714,19 +881,13 @@ function resolveGiveaway() {
 
     if (entrants.length === 0) {
         // Refund host
+        updatePlayerBalance(host, prize);
         const hPlayer = players[host];
-        if (hPlayer) {
-            hPlayer.balance += prize;
-            if (hPlayer.ws && hPlayer.ws.readyState === 1) {
-                hPlayer.ws.send(JSON.stringify({
-                    type: 'balance_update',
-                    balance: hPlayer.balance
-                }));
-                hPlayer.ws.send(JSON.stringify({
-                    type: 'giveaway_error',
-                    message: 'Giveaway cancelled: no players joined. Refunded!'
-                }));
-            }
+        if (hPlayer && hPlayer.ws && hPlayer.ws.readyState === 1) {
+            hPlayer.ws.send(JSON.stringify({
+                type: 'giveaway_error',
+                message: 'Giveaway cancelled: no players joined. Refunded!'
+            }));
         }
 
         // Broadcast cancellation
@@ -765,19 +926,13 @@ function resolveGiveaway() {
     const winner = entrants[Math.floor(Math.random() * entrants.length)];
     
     // Credit winner
+    updatePlayerBalance(winner, prize);
     const wPlayer = players[winner];
-    if (wPlayer) {
-        wPlayer.balance += prize;
-        if (wPlayer.ws && wPlayer.ws.readyState === 1) {
-            wPlayer.ws.send(JSON.stringify({
-                type: 'balance_update',
-                balance: wPlayer.balance
-            }));
-            wPlayer.ws.send(JSON.stringify({
-                type: 'giveaway_win_notify',
-                prize: prize
-            }));
-        }
+    if (wPlayer && wPlayer.ws && wPlayer.ws.readyState === 1) {
+        wPlayer.ws.send(JSON.stringify({
+            type: 'giveaway_win_notify',
+            prize: prize
+        }));
     }
 
     // Broadcast winner
