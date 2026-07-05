@@ -714,21 +714,13 @@ wss.on('connection', (ws) => {
                         return;
                     }
 
-                    const fromPlayer = players[sender];
-                    const toPlayer = players[recipient];
-
-                    if (!fromPlayer) {
+                    if (!usersDb[sender]) {
                         ws.send(JSON.stringify({ type: 'error', message: 'Sender not found.' }));
                         return;
                     }
 
-                    if (fromPlayer.balance < val) {
-                        ws.send(JSON.stringify({ type: 'error', message: 'Insufficient balance to tip.' }));
-                        return;
-                    }
-
-                    if (!toPlayer) {
-                        ws.send(JSON.stringify({ type: 'error', message: `Player '${recipient}' is not online.` }));
+                    if (!usersDb[recipient]) {
+                        ws.send(JSON.stringify({ type: 'error', message: `Player '${recipient}' does not exist.` }));
                         return;
                     }
 
@@ -737,28 +729,21 @@ wss.on('connection', (ws) => {
                         return;
                     }
 
-                    fromPlayer.balance -= val;
-                    toPlayer.balance += val;
-
-                    if (fromPlayer.ws && fromPlayer.ws.readyState === 1) {
-                        fromPlayer.ws.send(JSON.stringify({
-                            type: 'balance_update',
-                            balance: fromPlayer.balance
-                        }));
+                    if (usersDb[sender].balance < val) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Insufficient balance to tip.' }));
+                        return;
                     }
 
-                    if (toPlayer.ws && toPlayer.ws.readyState === 1) {
-                        toPlayer.ws.send(JSON.stringify({
-                            type: 'balance_update',
-                            balance: toPlayer.balance
-                        }));
-                    }
+                    // Deduct from sender and credit recipient
+                    updatePlayerBalance(sender, -val);
+                    updatePlayerBalance(recipient, val);
 
+                    // Broadcast tip in chat
                     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     const chatPayload = JSON.stringify({
                         type: 'chat_broadcast',
                         username: 'System',
-                        text: `💸 ${sender} tipped $${val.toFixed(2)} to ${recipient}!`,
+                        text: `💸 <strong>@${sender}</strong> tipped <strong>$${val.toFixed(2)}</strong> to <strong>@${recipient}</strong>!`,
                         timestamp: timestamp
                     });
 
