@@ -617,7 +617,7 @@ wss.on('connection', (ws) => {
         if (clientUsername) {
             console.log(`Player disconnected: ${clientUsername}`);
             if (players[clientUsername]) {
-                delete players[clientUsername];
+                players[clientUsername].ws = null;
             }
             // Cleanup any Open duels created by this player
             activeDuels = activeDuels.filter(d => !(d.creator === clientUsername && d.status === 'Open'));
@@ -663,14 +663,14 @@ function resolveDuelOutcome(duel) {
         activeDuels = activeDuels.filter(d => d.id !== duel.id);
         
         // Push final balances
-        if (players[p1] && players[p1].ws.readyState === 1) {
+        if (players[p1] && players[p1].ws && players[p1].ws.readyState === 1) {
             players[p1].ws.send(JSON.stringify({
                 type: 'outcome_resolved',
                 balance: players[p1].balance,
                 winnings: players[p1].totalWinnings
             }));
         }
-        if (players[p2] && players[p2].ws.readyState === 1) {
+        if (players[p2] && players[p2].ws && players[p2].ws.readyState === 1) {
             players[p2].ws.send(JSON.stringify({
                 type: 'outcome_resolved',
                 balance: players[p2].balance,
