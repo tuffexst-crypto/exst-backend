@@ -1,0 +1,29 @@
+{
+  "name": "apex-casino",
+  "version": "1.0.0",
+  "description": "Premium, highly visual casino web app with slots, blackjack, roulette, plinko, and simulated crypto deposits.",
+  "main": "index.html",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "casino",
+    "plinko",
+    "slots",
+    "blackjack",
+    "roulette",
+    "crypto",
+    "nowpayments",
+    "web-audio-api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "vite": "^5.2.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}
